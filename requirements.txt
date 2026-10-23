@@ -1,0 +1,25 @@
+# Voice-to-voice chat: fully local, no API keys.
+#   mic -> VAD -> STT (faster-whisper) -> LLM (Ollama) -> TTS (Kokoro) -> speaker
+
+# --- audio + VAD -------------------------------------------------------------
+numpy>=2.0.0
+onnxruntime>=1.22.0
+# Silero VAD ships as a 2 MB ONNX graph downloaded by server/download_models.py.
+# We deliberately do NOT depend on the `silero-vad` pip package: it drags in
+# PyTorch (~2.5 GB) just to bundle that one file.
+
+# --- speech to text (CTranslate2 backend, runs great on CPU) -----------------
+faster-whisper>=1.2.1
+
+# --- text to speech (Kokoro-82M, ONNX so we do NOT need torch) ---------------
+# kokoro-onnx phonemises with plain eSpeak via phonemizer-fork, so it does NOT
+# need spacy/misaki (which have no Windows wheel for Python 3.14 yet).
+kokoro-onnx>=0.4.7
+espeakng-loader>=0.2.4
+phonemizer-fork>=3.3.1
+
+# --- web server -------------------------------------------------------------
+fastapi>=0.115.0
+uvicorn>=0.34.0
+websockets>=13.0
+httpx>=0.27.0
