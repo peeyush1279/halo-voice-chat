@@ -243,7 +243,7 @@ PowerShell: `$env:V2V_TTS_ENGINE="edge"; .\run.ps1`.
 | `V2V_LLM_BACKEND` | `groq` | `groq` · `ollama` |
 | `V2V_TTS_ENGINE` | `gtts` | `gtts` · `edge` (better prosody) · `kokoro` (offline) |
 | `GROQ_API_KEY` | — | free key from <https://console.groq.com/keys> |
-| `V2V_GROQ_LLM_MODEL` | `llama-3.3-70b-versatile` | `llama-3.1-8b-instant` is faster with higher free limits |
+| `V2V_GROQ_LLM_MODEL` | `qwen/qwen3.8-27b` | `openai/gpt-oss-120b` has better prose, `openai/gpt-oss-20b` is the middle ground |
 | `V2V_GROQ_STT_MODEL` | `whisper-large-v3-turbo` | |
 | `V2V_GTTS_LANG` / `V2V_GTTS_TLD` | `en` / `com` | `co.uk`, `com.au`, `ie`, `ca`, `co.in` change the accent |
 | `V2V_EDGE_VOICE` | `en-US-AriaNeural` | any Edge neural voice, e.g. `en-GB-SoniaNeural` |
@@ -347,7 +347,8 @@ DLL path.
 
 * **Better hosted voice**: `V2V_TTS_ENGINE=edge` (also free, keyless, better
   prosody). Pick a voice with `V2V_EDGE_VOICE`.
-* **Lower hosted latency**: `V2V_GROQ_LLM_MODEL=llama-3.1-8b-instant`.
+* **Better prose on the hosted stack**: `V2V_GROQ_LLM_MODEL=openai/gpt-oss-120b`
+  (measured here: 0.93 s to first token vs 0.21 s for the default).
 * **Other languages**: `V2V_GTTS_LANG=de` (hosted), or in local mode
   `V2V_WHISPER_MODEL=Systran/faster-whisper-small` +
   `V2V_WHISPER_PARTIAL_MODEL=Systran/faster-whisper-small` +

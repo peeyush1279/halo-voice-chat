@@ -122,8 +122,11 @@ class Settings:
     groq_api_key: str = _env("GROQ_API_KEY", "")
     groq_api_base: str = _env("V2V_GROQ_API_BASE", "https://api.groq.com/openai/v1")
     groq_stt_model: str = _env("V2V_GROQ_STT_MODEL", "whisper-large-v3-turbo")
-    # 70b for better prose, 8b-instant for lower latency and higher free limits.
-    groq_llm_model: str = _env("V2V_GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
+    # Groq's catalogue changes: llama-3.3-70b-versatile and llama-3.1-8b-instant
+    # were retired, so this is what a fresh key can actually reach today.
+    # qwen3.8-27b answered in 0.21-0.34 s to first token with no reasoning
+    # leakage; openai/gpt-oss-20b and openai/gpt-oss-120b also work.
+    groq_llm_model: str = _env("V2V_GROQ_LLM_MODEL", "qwen/qwen3.8-27b")
     groq_timeout_s: float = _float("V2V_GROQ_TIMEOUT_S", 30.0)
 
 
@@ -228,10 +231,22 @@ class Settings:
     tts_first_chars: int = _int("V2V_TTS_FIRST_CHARS", 40)
     tts_trim_silence: bool = _bool("V2V_TTS_TRIM_SILENCE", True)
 
+    @property
+    def active_llm_model(self) -> str:
+        """The model name the current backend actually answers to.
+
+        `llm_model` is an Ollama tag; Groq has its own catalogue, and sending
+        one to the other is a 404, so every caller must go through this.
+        """
+        return self.groq_llm_model if self.llm_backend == "groq" else self.llm_model
+
     def public(self) -> dict:
         data = asdict(self)
         # Never ship the key to the browser, even though it is only a free one.
         data.pop("groq_api_key", None)
+        # The settings dialog shows and switches models, so it has to see the
+        # name the active backend answers to, not the Ollama tag.
+        data["llm_model"] = self.active_llm_model
         data["input_sample_rate"] = INPUT_SR
         data["output_sample_rate"] = OUTPUT_SR
         # gTTS and Edge hand back MP3, Kokoro hands back raw PCM. The client

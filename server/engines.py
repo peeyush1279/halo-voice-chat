@@ -210,7 +210,7 @@ class Engines:
             try:
                 await client.warmup()
                 self._set("llm", "ready")
-                log.info("LLM recovered: %s is reachable", model or self.settings.llm_model)
+                log.info("LLM recovered: %s is reachable", model or self.settings.active_llm_model)
                 return
             except Exception as exc:
                 self._set("llm", "error", str(exc))

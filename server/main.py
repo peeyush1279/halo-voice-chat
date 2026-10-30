@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
     async def boot() -> None:
         await asyncio.to_thread(engines.load_all)
         log.info("engines: %s", engines.status)
-        await engines.warm_llm(settings.llm_model)
+        await engines.warm_llm(settings.active_llm_model)
 
     boot_task = asyncio.create_task(boot())
     try:
@@ -88,7 +88,7 @@ async def api_config() -> JSONResponse:
 
 @app.get("/api/health")
 async def api_health() -> JSONResponse:
-    return JSONResponse({**engines.snapshot(), "settings": {"llm_model": settings.llm_model}})
+    return JSONResponse({**engines.snapshot(), "settings": {"llm_model": settings.active_llm_model}})
 
 
 @app.get("/api/models")

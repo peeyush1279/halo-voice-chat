@@ -74,7 +74,7 @@ class Conversation:
         self._tts_speed = self.s.tts_speed
         self._idle_emitted_for = -1
 
-        self._model = self.s.llm_model
+        self._model = self.s.active_llm_model
         self._llm = engines.make_llm(self._model)
         self._closed = False
 
