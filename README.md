@@ -43,7 +43,8 @@ Things worth knowing about the free tier:
   wake up (it re-imports FastAPI + onnxruntime and re-downloads the 2 MB VAD
   model).
 * 512 MB RAM. That is why nothing local is installed: no Whisper weights, no
-  Kokoro, no Ollama. Peak RSS here is ~200 MB.
+  Kokoro, no Ollama. Measured idle RSS with numpy + onnxruntime is ~105 MB, so a
+  turn has plenty of room.
 * WebSockets are supported on free services; serverless platforms (Vercel,
   Netlify, Lambda) are not an option for this app.
 
