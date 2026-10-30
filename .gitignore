@@ -7,3 +7,4 @@ reply.wav
 *.mp3
 *.log
 .env
+.hf_token
