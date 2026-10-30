@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 
@@ -29,11 +30,14 @@ def configure_logging(level: str = "INFO") -> None:
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("onnxruntime").setLevel(logging.ERROR)
+    # These three narrate every HTTP call at DEBUG; keep DEBUG usable for ours.
+    for noisy in ("gtts", "urllib3", "httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.INFO)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging()
+    configure_logging(os.environ.get("V2V_LOG_LEVEL", "INFO"))
     log.info(
         "voice-chat starting   stt=%s  llm=%s  tts=%s",
         settings.stt_backend,
@@ -106,7 +110,8 @@ async def api_models() -> JSONResponse:
 async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     conversation = Conversation(ws, engines)
-    log.info("client connected")
+    agent = (ws.headers.get("user-agent") or "?").replace("\n", " ")
+    log.info("client connected   ua=%s", agent[:130])
     try:
         await conversation.run()
     finally:
@@ -116,7 +121,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 def main() -> None:
     import uvicorn
 
-    configure_logging()
+    configure_logging(os.environ.get("V2V_LOG_LEVEL", "INFO"))
     # Pass the app object (not an import string): the module is already loaded,
     # and "server.main:app" would import it a second time as a separate object.
     uvicorn.run(

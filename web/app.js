@@ -52,6 +52,9 @@ const state = {
   botBubble: null,
   micLevel: 0,
   outLevel: 0,
+  micPeak: 0,        // loudest sample seen since this mic was opened
+  micStartedAt: 0,
+  micWarned: false,
   draining: false,   // server said idle, but the last audio is still audible
   phase: 'idle',          // idle | listening | thinking | speaking
   micBlocked: false,
@@ -515,6 +518,9 @@ async function startTalking() {
 
     state.started = true;
     state.micBlocked = false;
+    state.micPeak = 0;
+    state.micStartedAt = 0;
+    state.micWarned = false;
     els.start.disabled = true;
     els.start.textContent = 'Running';
     els.mic.disabled = false;
@@ -579,6 +585,29 @@ function drawOrb() {
   const outK = outLvl > state.outLevel ? 0.6 : 0.2;
   state.micLevel += (micLvl - state.micLevel) * micK;
   state.outLevel += (outLvl - state.outLevel) * outK;
+
+  // "Nothing happens when I speak" has three very different causes: the page
+  // never got a mic, the device delivers silence (muted, wrong input, hardware
+  // switch), or the audio never leaves the browser. The analyser is on the raw
+  // device stream, so this catches the second case and says so instead of
+  // leaving a still ring and no explanation.
+  if (state.started && !state.muted) {
+    if (!state.micStartedAt) state.micStartedAt = performance.now();
+    if (micLvl > state.micPeak) state.micPeak = micLvl;
+    const silentFor = (performance.now() - state.micStartedAt) / 1000;
+    const warn = silentFor > 8 && state.micPeak < 0.02;
+    if (warn !== state.micWarned) {
+      state.micWarned = warn;
+      if (warn) {
+        setStatus(
+          'Waiting for sound',
+          'The ring is still because nothing has reached the page yet. Check that the right input is selected and that the mic is not muted, then reload and press Start again.'
+        );
+      } else {
+        setStatus('Ready to talk', '');
+      }
+    }
+  }
 
   // The server sends `idle` as soon as it stops *sending*, but the player
   // schedules up to 0.4 s of audio ahead, so Halo is usually still audible.

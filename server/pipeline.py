@@ -78,6 +78,13 @@ class Conversation:
         self._llm = engines.make_llm(self._model)
         self._closed = False
 
+        # Diagnostics: without these, a client that never sends audio and a
+        # client sending a silent stream look identical from the server.
+        self._frames = 0
+        self._peak = 0.0
+        self._first_frame_at: float | None = None
+        self._connected_at = time.monotonic()
+
     # ------------------------------------------------------------------ setup
     async def run(self) -> None:
         self._sender_task = asyncio.create_task(self._sender(), name="ws-sender")
@@ -165,21 +172,56 @@ class Conversation:
         if pcm.size == 0:
             return
         audio = pcm.astype(np.float32) / 32768.0
+        self._audio_stats(audio)
 
         for event in self.detector.push(audio):
             if event.kind == "start":
+                log.info("speech started (peak so far %.3f)", self._peak)
                 self._emit({"type": "speech_start"})
             elif event.kind == "confirm":
                 # Real speech: this is the moment we are allowed to barge in.
                 if self._assistant_busy():
                     self._interrupt("barge_in")
             elif event.kind == "end":
+                log.info("speech ended after %d frames", self._frames)
                 self._emit({"type": "speech_end"})
                 if event.audio is not None and event.audio.size:
                     self._begin_turn(event.audio)
 
         if self.detector.speaking:
             self._maybe_partial()
+
+    def _audio_stats(self, audio: np.ndarray) -> None:
+        """Log that audio is arriving, and whether it is actually audible.
+
+        Three failure modes look the same in the browser ("nothing happens"):
+        no frames at all (capture never started), frames of pure silence (wrong
+        or muted input device), and audio the VAD refuses. This separates them
+        from the server side. Levels only - never the audio itself.
+        """
+        self._frames += 1
+        if self._first_frame_at is None:
+            self._first_frame_at = time.monotonic()
+            log.info(
+                "audio: first frame after %.1fs idle (%d samples, %d bytes)",
+                self._first_frame_at - self._connected_at,
+                audio.size,
+                audio.size * 2,
+            )
+        peak = float(np.abs(audio).max())
+        if peak > self._peak:
+            self._peak = peak
+        if self._frames in (50, 500):
+            elapsed = time.monotonic() - (self._first_frame_at or 0)
+            muted = " - SILENT: device muted or wrong input" if self._peak < 0.01 else ""
+            log.info(
+                "audio: %d frames in %.1fs (%.1f/s), peak %.3f%s",
+                self._frames,
+                elapsed,
+                self._frames / max(elapsed, 1e-3),
+                self._peak,
+                muted,
+            )
 
     def _assistant_busy(self) -> bool:
         return self._generating or self._audio_pending > 0
@@ -287,6 +329,10 @@ class Conversation:
         t_stt = time.perf_counter()
         text = " ".join(text.split())
         self._timing[turn] = {"t0": t0, "t_stt": t_stt, "t_first_token": None, "t_first_audio": None}
+        # Content stays at DEBUG: this is a shared link, and the owner can turn
+        # it on with V2V_LOG_LEVEL=debug when something needs explaining.
+        log.debug("transcript: %s", text)
+        log.info("transcribed %d chars in %.0f ms", len(text), (t_stt - t0) * 1000)
         self._emit({"type": "user", "text": text, "final": True})
 
         if len(text) < 2:
