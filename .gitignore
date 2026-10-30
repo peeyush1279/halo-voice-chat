@@ -8,3 +8,4 @@ reply.wav
 *.log
 .env
 .hf_token
+.render_token

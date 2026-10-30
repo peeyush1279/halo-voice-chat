@@ -65,16 +65,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="deploy to a Hugging Face Space")
     parser.add_argument("--token", default=None, help="HF write token (or set HF_TOKEN)")
     parser.add_argument("--space", default="halo-voice-chat", help="Space repo name")
-    parser.add_argument("--user", default="peeyush1279", help="HF username or org")
+    parser.add_argument("--user", default=None, help="HF username or org (default: the token's account)")
     parser.add_argument("--private", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="stage the files, upload nothing")
     args = parser.parse_args()
 
-    repo_id = f"{args.user}/{args.space}"
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp)
         files = stage(target)
-        print(f"staged {len(files)} files for {repo_id}:")
+        print(f"staged {len(files)} files:")
         for name in files:
             print("  ", name)
         if args.dry_run:
@@ -108,7 +107,9 @@ def main() -> int:
 
         api = HfApi(token=token)
         who = api.whoami()
-        print(f"\nlogged in as {who.get('name')}")
+        user = args.user or who.get("name")
+        repo_id = f"{user}/{args.space}"
+        print(f"\nlogged in as {who.get('name')}  ->  {repo_id}")
 
         api.create_repo(
             repo_id=repo_id,
