@@ -1,0 +1,17 @@
+# Fully-offline install: nothing leaves the machine, no API keys.
+# Use with:  V2V_STT_BACKEND=local  V2V_LLM_BACKEND=ollama  V2V_TTS_ENGINE=kokoro
+#
+# Needs ~3 GB of disk for the models and a real CPU budget, so it is not what
+# the hosted instance runs.
+
+-r requirements.txt
+
+# --- speech to text (CTranslate2 backend, runs great on CPU) -----------------
+faster-whisper>=1.2.1
+
+# --- text to speech (Kokoro-82M, ONNX so we do NOT need torch) ---------------
+# kokoro-onnx phonemises with plain eSpeak via phonemizer-fork, so it does NOT
+# need spacy/misaki (which have no Windows wheel for Python 3.14 yet).
+kokoro-onnx>=0.4.7
+espeakng-loader>=0.2.4
+phonemizer-fork>=3.3.1

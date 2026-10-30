@@ -36,6 +36,13 @@ def main() -> int:
     settings = get_settings()
     ok = True
 
+    if settings.tts_engine != "kokoro" or settings.stt_backend != "local":
+        print(
+            "   This self-test measures the offline stack (Kokoro -> VAD -> Whisper).\n"
+            "   Run it as:  .\\run.ps1 -Check   (it forces local backends for you),\n"
+            "   or set V2V_STT_BACKEND=local V2V_LLM_BACKEND=ollama V2V_TTS_ENGINE=kokoro.\n"
+        )
+
     # ---------------------------------------------------------------- chunker
     hr("1. Chunker (how fast we hand text to TTS)")
     chunker = SpeechChunker(settings.tts_min_chars, settings.tts_max_chars)

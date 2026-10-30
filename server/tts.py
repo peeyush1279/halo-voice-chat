@@ -1,17 +1,21 @@
-"""Kokoro-82M text to speech.
+"""Text to speech.
 
-Runs on the ONNX runtime by default (no torch, fast enough on CPU) and can fall
-back to the `kokoro` torch package if that is what you have installed.
+Three interchangeable engines behind the same `audio_payload()` call:
 
-Kokoro needs grapheme-to-phoneme conversion for English, which goes through
-eSpeak.  `espeakng-loader` ships a Windows DLL so you do not have to install
-eSpeak system-wide.
+* `GttsTTS`   - Google Translate's speak endpoint via `gTTS`. Free, no key, no
+                account. Returns MP3, so it suits a hosted instance.
+* `EdgeTTS`   - Microsoft Edge's read-aloud voices via `edge-tts`. Also free and
+                keyless, better prosody than gTTS, MP3 as well.
+* `KokoroTTS` - the 82M ONNX model, fully offline, returns 24 kHz PCM. Needs a
+                machine with a real CPU budget, so it is the local option.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import os
+import time
 
 import numpy as np
 
@@ -47,6 +51,8 @@ def _trim_silence(audio: np.ndarray, sample_rate: int, threshold: float = 0.004,
 
 
 class KokoroTTS:
+    audio_format = "pcm"
+
     def __init__(self, models_dir, backend: str = "auto", default_voice: str = "af_heart", speed: float = 1.0, trim_silence: bool = True):
         self.models_dir = models_dir
         self.default_voice = default_voice
@@ -136,3 +142,97 @@ class KokoroTTS:
             self.synthesize("Ready.")
         except Exception as exc:  # pragma: no cover
             log.warning("TTS warmup failed: %s", exc)
+
+    # ---- uniform output for the pipeline ------------------------------------
+    def audio_payload(self, text: str, voice: str | None = None, speed: float | None = None):
+        """Return (bytes, sample_rate, format) ready to put on the wire."""
+        audio, sample_rate = self.synthesize(text, voice=voice, speed=speed)
+        pcm = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
+        return (pcm * 32767.0).astype(np.int16).tobytes(), sample_rate, "pcm"
+
+
+class GttsTTS:
+    """gTTS: free, keyless, one MP3 per clause.
+
+    Google's endpoint is undocumented and occasionally returns 403/429 when it
+    decides you are a robot, so every clause gets three attempts with a short
+    backoff before the turn is allowed to fail.
+    """
+
+    audio_format = "mp3"
+
+    def __init__(self, lang: str = "en", tld: str = "com", attempts: int = 3):
+        from gtts import gTTS  # fail at load time if the package is missing
+
+        self._gTTS = gTTS
+        self.lang = lang
+        self.tld = tld
+        self.attempts = max(1, attempts)
+
+    def synthesize(self, text: str, voice: str | None = None, speed: float | None = None) -> bytes:
+        return self._fetch(text)
+
+    def _fetch(self, text: str) -> bytes:
+        last: Exception | None = None
+        for attempt in range(self.attempts):
+            buffer = io.BytesIO()
+            try:
+                self._gTTS(text=text, lang=self.lang, tld=self.tld).write_to_fp(buffer)
+                data = buffer.getvalue()
+                if data:
+                    return data
+                last = RuntimeError("empty response")
+            except Exception as exc:
+                last = exc
+            if attempt + 1 < self.attempts:
+                time.sleep(0.4 * (attempt + 1))
+        raise RuntimeError(f"gTTS failed after {self.attempts} tries: {last}")
+
+    def audio_payload(self, text: str, voice: str | None = None, speed: float | None = None):
+        return self._fetch(text), 24_000, "mp3"
+
+    def warmup(self) -> None:
+        # Warmup would be a real request against a free endpoint; skip it and
+        # let the first clause pay the (small) connection cost.
+        pass
+
+
+class EdgeTTS:
+    """Microsoft Edge read-aloud voices. Free and keyless, better than gTTS.
+
+    `edge-tts` is async, and this runs on the pipeline's TTS worker thread, so
+    a private event loop per clause is fine and keeps the interface sync.
+    """
+
+    audio_format = "mp3"
+
+    def __init__(self, voice: str = "en-US-AriaNeural", rate: str = "+0%"):
+        from edge_tts import Communicate  # fail at load time if the package is missing
+
+        self._Communicate = Communicate
+        self.voice = voice
+        self.rate = rate
+
+    def _fetch(self, text: str) -> bytes:
+        import asyncio
+
+        async def run() -> bytes:
+            buffer = io.BytesIO()
+            async for chunk in self._Communicate(text, self.voice, rate=self.rate).stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    buffer.write(chunk["data"])
+            return buffer.getvalue()
+
+        data = asyncio.run(run())
+        if not data:
+            raise RuntimeError("edge-tts returned no audio")
+        return data
+
+    def synthesize(self, text: str, voice: str | None = None, speed: float | None = None) -> bytes:
+        return self._fetch(text)
+
+    def audio_payload(self, text: str, voice: str | None = None, speed: float | None = None):
+        return self._fetch(text), 24_000, "mp3"
+
+    def warmup(self) -> None:
+        pass

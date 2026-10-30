@@ -164,3 +164,105 @@ class OllamaClient:
             raise
         except Exception as exc:  # pragma: no cover
             log.warning("LLM warmup failed: %s", exc)
+
+
+class GroqError(RuntimeError):
+    pass
+
+
+class GroqClient:
+    """OpenAI-compatible streaming chat on Groq's free tier.
+
+    Same `stream_chat(messages)` generator as `OllamaClient`, so the pipeline
+    is unaware of which one it is holding.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        system_prompt: str,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int = 220,
+        timeout: float = 30.0,
+    ):
+        if not api_key:
+            raise GroqError(
+                "GROQ_API_KEY is not set. Get a free key at "
+                "https://console.groq.com/keys and set it in the environment."
+            )
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.system_prompt = system_prompt
+        self.temperature = temperature
+        self.top_p = top_p
+        self.max_tokens = max_tokens
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=timeout, write=15.0, pool=5.0)
+        )
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+    def _explain(self, status: int, body: str) -> str:
+        if status == 401:
+            return "Groq rejected the API key (401). Check GROQ_API_KEY."
+        if status == 429:
+            return (
+                "Groq rate limit hit (429). The free tier is limited per minute "
+                "and per day; wait a moment and try again."
+            )
+        if status == 404:
+            return f"Groq does not know the model {self.model!r} (404). {body[:160]}"
+        return f"Groq returned {status}: {body[:200]}"
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def list_models(self) -> list[dict]:
+        response = await self._client.get(f"{self.base_url}/models", headers=self._headers())
+        if response.status_code >= 400:
+            raise GroqError(self._explain(response.status_code, response.text))
+        return [{"name": item.get("id")} for item in response.json().get("data", [])]
+
+    async def stream_chat(self, messages: list[dict]) -> AsyncIterator[str]:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_tokens": self.max_tokens,
+        }
+        try:
+            async with self._client.stream(
+                "POST", f"{self.base_url}/chat/completions", json=payload, headers=self._headers()
+            ) as response:
+                if response.status_code >= 400:
+                    body = (await response.aread()).decode("utf-8", "replace")
+                    raise GroqError(self._explain(response.status_code, body))
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if err := obj.get("error"):
+                        raise GroqError(str(err))
+                    choices = obj.get("choices") or [{}]
+                    piece = (choices[0].get("delta") or {}).get("content")
+                    if piece:
+                        yield piece
+        except httpx.HTTPError as exc:
+            raise GroqError(f"cannot reach Groq ({exc})") from exc
+
+    async def warmup(self) -> None:
+        # A hosted API is already warm; a probe request would only spend quota.
+        pass

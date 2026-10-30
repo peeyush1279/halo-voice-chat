@@ -40,7 +40,14 @@ def read_wav(path: Path) -> np.ndarray:
 
 
 def make_speech(text: str) -> np.ndarray:
-    from .tts import KokoroTTS
+    try:
+        from .tts import KokoroTTS
+    except Exception as exc:
+        raise SystemExit(
+            "  Kokoro is not installed (this is the hosted stack), so there is no\n"
+            "  local voice to synthesise a test input with. Pass a 16 kHz mono WAV:\n"
+            "    python -m server.wstest --wav me.wav"
+        ) from exc
 
     settings = get_settings()
     print("  synthesising test input with Kokoro…")
@@ -69,6 +76,8 @@ async def run(args: argparse.Namespace) -> int:
     print(f"  connecting to {url}\n")
 
     reply_audio: list[np.ndarray] = []
+    reply_mp3 = bytearray()
+    fmt = "pcm"
     rate = 24_000
     done = asyncio.Event()
     t_sent_end = None
@@ -83,10 +92,13 @@ async def run(args: argparse.Namespace) -> int:
             print("  [sent] end of speech")
 
         async def receiver() -> None:
-            nonlocal rate
+            nonlocal rate, fmt
             async for message in ws:
                 if isinstance(message, (bytes, bytearray)):
-                    reply_audio.append(np.frombuffer(message, dtype=np.int16))
+                    if fmt == "mp3":
+                        reply_mp3.extend(message)
+                    else:
+                        reply_audio.append(np.frombuffer(message, dtype=np.int16))
                     continue
                 event = json.loads(message)
                 kind = event.get("type")
@@ -109,6 +121,7 @@ async def run(args: argparse.Namespace) -> int:
                     print("\n  [llm  ] done")
                 elif kind == "audio_start":
                     rate = event.get("sample_rate", rate)
+                    fmt = event.get("format", "pcm")
                     if t_sent_end:
                         print(f"  [tts  ] first audio {time.perf_counter() - t_sent_end:.2f}s after I stopped talking")
                     print(f"  [tts  ] speaking {event['text']!r}")
@@ -133,6 +146,11 @@ async def run(args: argparse.Namespace) -> int:
             print(f"\n  timed out after {args.timeout}s")
         receiver_task.cancel()
 
+    if reply_mp3:
+        out_path = ROOT / "reply.mp3"
+        out_path.write_bytes(bytes(reply_mp3))
+        print(f"  wrote {len(reply_mp3) / 1024:.0f} KB of reply audio to {out_path}")
+        return 0
     if reply_audio:
         audio_out = np.concatenate(reply_audio).astype(np.float32) / 32768.0
         out_path = ROOT / "reply.wav"

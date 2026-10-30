@@ -1,0 +1,25 @@
+# Render blueprint: free web service, WebSocket-friendly, 512 MB.
+#   1. push this repo
+#   2. Render dashboard -> New -> Blueprint -> pick the repo
+#   3. paste GROQ_API_KEY when prompted
+services:
+  - type: web
+    name: halo-voice-chat
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: V2V_STT_BACKEND
+        value: groq
+      - key: V2V_LLM_BACKEND
+        value: groq
+      - key: V2V_TTS_ENGINE
+        value: gtts
+      - key: V2V_HOST
+        value: 0.0.0.0

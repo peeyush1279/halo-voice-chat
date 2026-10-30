@@ -23,15 +23,26 @@ $env:V2V_PORT = "$Port"
 if ($Model) { $env:V2V_LLM_MODEL = $Model }
 if ($Voice) { $env:V2V_TTS_VOICE = $Voice }
 
-# Ollama is a separate process that has to be running for chat to work. Starting
-# it here (the desktop app does the same thing) saves a confusing "cannot reach
-# Ollama" failure several seconds into your first conversation.
+if ($Check) {
+    # The self-test deliberately measures the offline stack (it round-trips
+    # Kokoro audio through the VAD and Whisper), so force it even if .env says
+    # otherwise. A real environment variable wins over .env in config.py.
+    $env:V2V_STT_BACKEND = "local"
+    $env:V2V_LLM_BACKEND = "ollama"
+    $env:V2V_TTS_ENGINE = "kokoro"
+}
+
+# Ollama is only needed for the fully-offline stack. Start it here (the desktop
+# app does the same thing) so the local mode does not fail with a confusing
+# "cannot reach Ollama" several seconds into the first conversation.
 function Test-Ollama {
     try { Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -TimeoutSec 3 | Out-Null; return $true }
     catch { return $false }
 }
 
-if (-not (Test-Ollama)) {
+if ($env:V2V_LLM_BACKEND -and $env:V2V_LLM_BACKEND -ne "ollama") {
+    Write-Host "  Chat backend: $($env:V2V_LLM_BACKEND) (no local model needed)" -ForegroundColor DarkGray
+} elseif (-not (Test-Ollama)) {
     Write-Host "  Ollama is not running - starting it..." -ForegroundColor Yellow
     $ollama = (Get-Command ollama.exe -ErrorAction SilentlyContinue).Source
     if (-not $ollama) { $ollama = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe" }
@@ -45,6 +56,11 @@ if (-not (Test-Ollama)) {
         Write-Host "  Could not reach Ollama - chat will not work until it is started:" -ForegroundColor Red
         Write-Host "    ollama serve" -ForegroundColor DarkGray
     }
+}
+
+if (-not (Test-Path (Join-Path $root ".env")) -and -not $env:GROQ_API_KEY) {
+    Write-Host "  Note: no .env and no GROQ_API_KEY - speech and chat will report an error." -ForegroundColor Yellow
+    Write-Host "        Create one free key at https://console.groq.com/keys" -ForegroundColor DarkGray
 }
 
 if ($Check) {

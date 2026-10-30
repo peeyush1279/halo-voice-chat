@@ -13,6 +13,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
+
+
+def _load_dotenv(path: Path = ROOT / ".env") -> None:
+    """Read KEY=VALUE lines into the environment, without overwriting anything.
+
+    A real environment variable always wins, which is what a host like Render
+    injects, so the same file works locally and is simply absent in production.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv()
+
 MODELS_DIR = Path(os.getenv("V2V_MODELS_DIR") or (ROOT / "models")).resolve()
 
 # Audio formats.  The browser always streams mono int16 @ 16 kHz (what Silero VAD
@@ -79,7 +104,28 @@ VOICES = [
 class Settings:
     # ---- server -------------------------------------------------------------
     host: str = _env("V2V_HOST", "127.0.0.1")
-    port: int = _int("V2V_PORT", 8000)
+    # Render, Fly and Railway all inject PORT. V2V_PORT still wins when both
+    # are set, so the local workflow is unchanged.
+    port: int = _int("V2V_PORT", _int("PORT", 8000))
+
+    # ---- which backends to use ----------------------------------------------
+    # The app ships as a hosted service: a free 512 MB instance cannot hold a
+    # 4 GB GPU model, so speech and chat default to free cloud APIs. Set these
+    # to "local"/"kokoro" to run the on-device stack instead (see
+    # requirements-local.txt).
+    stt_backend: str = _env("V2V_STT_BACKEND", "groq").lower()   # groq | local
+    llm_backend: str = _env("V2V_LLM_BACKEND", "groq").lower()   # groq | ollama
+    tts_engine: str = _env("V2V_TTS_ENGINE", "gtts").lower()     # gtts | edge | kokoro
+
+    # ---- Groq (free tier, no credit card) -----------------------------------
+    # One key covers both Whisper and chat: https://console.groq.com/keys
+    groq_api_key: str = _env("GROQ_API_KEY", "")
+    groq_api_base: str = _env("V2V_GROQ_API_BASE", "https://api.groq.com/openai/v1")
+    groq_stt_model: str = _env("V2V_GROQ_STT_MODEL", "whisper-large-v3-turbo")
+    # 70b for better prose, 8b-instant for lower latency and higher free limits.
+    groq_llm_model: str = _env("V2V_GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
+    groq_timeout_s: float = _float("V2V_GROQ_TIMEOUT_S", 30.0)
+
 
     # ---- LLM (Ollama) -------------------------------------------------------
     ollama_url: str = _env("V2V_OLLAMA_URL", "http://127.0.0.1:11434")
@@ -160,8 +206,15 @@ class Settings:
     partial_min_audio_s: float = _float("V2V_PARTIAL_MIN_AUDIO_S", 0.9)
     partial_max_audio_s: float = _float("V2V_PARTIAL_MAX_AUDIO_S", 14.0)
 
-    # ---- TTS (Kokoro) -------------------------------------------------------
-    tts_backend: str = _env("V2V_TTS_BACKEND", "auto")  # auto | onnx | torch
+    # ---- TTS (Kokoro / gTTS / Edge) -----------------------------------------
+    # Kokoro sub-backend when tts_engine == "kokoro": auto | onnx | torch
+    tts_backend: str = _env("V2V_TTS_BACKEND", "auto")
+    # gTTS: lang is the spoken language, tld picks the accent
+    # (com = US, co.uk = UK, com.au = AU, ie = IE, ca = CA, co.in = IN).
+    gtts_lang: str = _env("V2V_GTTS_LANG", "en")
+    gtts_tld: str = _env("V2V_GTTS_TLD", "com")
+    # Edge: any https://speech.platform.bing.com voice name.
+    edge_voice: str = _env("V2V_EDGE_VOICE", "en-US-AriaNeural")
     tts_voice: str = _env("V2V_TTS_VOICE", "af_heart")
     tts_speed: float = _float("V2V_TTS_SPEED", 1.0)
     tts_lang: str = _env("V2V_TTS_LANG", "en-us")
@@ -177,9 +230,14 @@ class Settings:
 
     def public(self) -> dict:
         data = asdict(self)
+        # Never ship the key to the browser, even though it is only a free one.
+        data.pop("groq_api_key", None)
         data["input_sample_rate"] = INPUT_SR
         data["output_sample_rate"] = OUTPUT_SR
-        data["voices"] = VOICES
+        # gTTS and Edge hand back MP3, Kokoro hands back raw PCM. The client
+        # needs to know which before the first audio_start arrives.
+        data["audio_format"] = "pcm" if self.tts_engine == "kokoro" else "mp3"
+        data["voices"] = VOICES if self.tts_engine == "kokoro" else []
         return data
 
 

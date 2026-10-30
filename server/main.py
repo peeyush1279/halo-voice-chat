@@ -34,8 +34,16 @@ def configure_logging(level: str = "INFO") -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    log.info("voice-chat starting   LLM=%s  Whisper=%s  Kokoro voice=%s", settings.llm_model, settings.whisper_model, settings.tts_voice)
-    log.info("LLM backend: %s", settings.ollama_url)
+    log.info(
+        "voice-chat starting   stt=%s  llm=%s  tts=%s",
+        settings.stt_backend,
+        settings.llm_backend,
+        settings.tts_engine,
+    )
+    if settings.llm_backend == "ollama":
+        log.info("Ollama backend: %s  model=%s", settings.ollama_url, settings.llm_model)
+    else:
+        log.info("Groq backend: model=%s  key=%s", settings.groq_llm_model, "set" if settings.groq_api_key else "MISSING")
 
     async def boot() -> None:
         await asyncio.to_thread(engines.load_all)

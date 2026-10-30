@@ -1,13 +1,37 @@
-"""Speech to text with faster-whisper (CTranslate2 - no torch required)."""
+"""Speech to text.
+
+Two interchangeable engines behind the same `transcribe()` call:
+
+* `Transcriber`     - faster-whisper on the local CPU (CTranslate2, no torch).
+* `GroqTranscriber` - Whisper large-v3-turbo on Groq's free tier. Used when the
+                      app is hosted, where there is no CPU budget for a local
+                      model.
+"""
 
 from __future__ import annotations
 
+import io
 import logging
 import time
+import wave
 
 import numpy as np
 
 log = logging.getLogger("v2v.stt")
+
+
+def wav_bytes(audio: np.ndarray, sample_rate: int = 16_000) -> bytes:
+    """Wrap mono float32 [-1, 1] as a 16-bit PCM WAV, in memory."""
+    pcm = np.clip(audio, -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
 
 
 class Transcriber:
@@ -73,3 +97,80 @@ class Transcriber:
             self.transcribe(np.zeros(16_000, dtype=np.float32))
         except Exception as exc:  # pragma: no cover
             log.debug("warmup failed (harmless): %s", exc)
+
+
+class GroqTranscriber:
+    """Whisper on Groq's free tier. Same interface as `Transcriber`.
+
+    Free tier is rate-limited per minute and per day, which is fine for one
+    final transcript per turn and hopeless for the live partial transcript, so
+    partials are switched off rather than spending the quota on text we throw
+    away.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "whisper-large-v3-turbo",
+        language: str = "en",
+        base_url: str = "https://api.groq.com/openai/v1",
+        timeout: float = 30.0,
+    ):
+        if not api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Get a free key at "
+                "https://console.groq.com/keys and set it in the environment."
+            )
+        import httpx  # imported here so local-only installs do not need it at import time
+
+        self._httpx = httpx
+        self.api_key = api_key
+        self.model = model
+        self.language = language or None
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.last_rtf: float | None = None
+
+    def transcribe(self, audio: np.ndarray, *, partial: bool = False) -> str:
+        if partial:
+            return ""
+        if audio is None or audio.size < 1600:  # < 100 ms
+            return ""
+
+        started = time.perf_counter()
+        data = {"model": self.model, "response_format": "json", "temperature": "0"}
+        if self.language:
+            data["language"] = self.language
+
+        try:
+            response = self._httpx.post(
+                f"{self.base_url}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                files={"file": ("speech.wav", wav_bytes(audio), "audio/wav")},
+                data=data,
+                timeout=self.timeout,
+            )
+        except self._httpx.HTTPError as exc:
+            raise RuntimeError(f"cannot reach Groq speech-to-text ({exc})") from exc
+
+        if response.status_code == 401:
+            raise RuntimeError("Groq rejected the API key (401). Check GROQ_API_KEY.")
+        if response.status_code == 429:
+            raise RuntimeError(
+                "Groq speech-to-text rate limit hit (429). Wait a few seconds "
+                "and try again."
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Groq speech-to-text returned {response.status_code}: {response.text[:200]}"
+            )
+
+        text = (response.json().get("text") or "").strip()
+        duration = audio.size / 16_000
+        if duration > 0:
+            self.last_rtf = (time.perf_counter() - started) / duration
+        return text
+
+    def warmup(self) -> None:
+        # No warmup request: it would cost a call against a 30/minute quota.
+        pass

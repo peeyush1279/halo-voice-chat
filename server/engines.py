@@ -12,9 +12,9 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from .llm import OllamaClient
-from .stt import Transcriber
-from .tts import KokoroTTS
+from .llm import GroqClient, OllamaClient
+from .stt import GroqTranscriber, Transcriber
+from .tts import EdgeTTS, GttsTTS, KokoroTTS
 from .vad import SileroVAD
 
 log = logging.getLogger("v2v.engines")
@@ -76,6 +76,19 @@ class Engines:
         s = self.settings
         try:
             self._set("stt", "loading")
+            if s.stt_backend == "groq":
+                self.stt = GroqTranscriber(
+                    api_key=s.groq_api_key,
+                    model=s.groq_stt_model,
+                    language=s.whisper_language,
+                    base_url=s.groq_api_base,
+                    timeout=s.groq_timeout_s,
+                )
+                # No second model: partials are off in cloud mode, see
+                # partials_are_affordable().
+                self.stt_partial = None
+                self._set("stt", "ready")
+                return
             self.stt = Transcriber(
                 model_name=s.whisper_model,
                 device=s.whisper_device,
@@ -108,13 +121,18 @@ class Engines:
         s = self.settings
         try:
             self._set("tts", "loading")
-            self.tts = KokoroTTS(
-                models_dir=self.models_dir,
-                backend=s.tts_backend,
-                default_voice=s.tts_voice,
-                speed=s.tts_speed,
-                trim_silence=s.tts_trim_silence,
-            )
+            if s.tts_engine == "gtts":
+                self.tts = GttsTTS(lang=s.gtts_lang, tld=s.gtts_tld)
+            elif s.tts_engine == "edge":
+                self.tts = EdgeTTS(voice=s.edge_voice)
+            else:
+                self.tts = KokoroTTS(
+                    models_dir=self.models_dir,
+                    backend=s.tts_backend,
+                    default_voice=s.tts_voice,
+                    speed=s.tts_speed,
+                    trim_silence=s.tts_trim_silence,
+                )
             self.tts.warmup()
             self._set("tts", "ready")
         except Exception as exc:
@@ -144,7 +162,13 @@ class Engines:
         This measures the *partial* worker, which is deliberately cheaper than
         the one used for finals - otherwise the accurate final model would
         switch partials off even though the cheap one keeps up fine.
+
+        On Groq they are switched off outright: a partial every 0.7 s would eat
+        a 30-requests-per-minute free quota to render text that gets thrown
+        away when the turn ends.
         """
+        if self.settings.stt_backend == "groq":
+            return False
         if self.finals_in_flight:
             return False
         worker = self.stt_partial or self.stt
@@ -165,7 +189,9 @@ class Engines:
             # Ollama is a separate process that is often not running yet.  Retry
             # quietly in the background so /api/health recovers (and the model
             # gets resident) as soon as it comes up, instead of staying red.
-            self._schedule_llm_retry(model)
+            # A hosted API never "comes up later", so there is nothing to poll.
+            if self.settings.llm_backend != "groq":
+                self._schedule_llm_retry(model)
 
     def _schedule_llm_retry(self, model: str | None) -> None:
         if self._llm_retry and not self._llm_retry.done():
@@ -192,8 +218,19 @@ class Engines:
                 await client.aclose()
 
     # ---- factories ---------------------------------------------------------
-    def make_llm(self, model: str | None = None) -> OllamaClient:
+    def make_llm(self, model: str | None = None) -> OllamaClient | GroqClient:
         s = self.settings
+        if s.llm_backend == "groq":
+            return GroqClient(
+                base_url=s.groq_api_base,
+                api_key=s.groq_api_key,
+                model=model or s.groq_llm_model,
+                system_prompt=s.system_prompt,
+                temperature=s.llm_temperature,
+                top_p=s.llm_top_p,
+                max_tokens=s.llm_max_tokens,
+                timeout=s.groq_timeout_s,
+            )
         return OllamaClient(
             base_url=s.ollama_url,
             model=model or s.llm_model,

@@ -45,6 +45,8 @@ const state = {
   pttHeld: false,
   echoGuard: false,
   audioRate: 24000,
+  audioFormat: 'pcm',        // 'pcm' (local Kokoro) or 'mp3' (gTTS / Edge)
+  mp3Parts: null,            // bytes of the clause currently arriving as MP3
   cfg: null,
   userBubble: null,
   botBubble: null,
@@ -70,6 +72,8 @@ class Player {
     this.active = new Set();
     this.nextTime = 0;
     this.playing = false;
+    this.pending = 0;        // MP3 clauses handed to decodeAudioData, not queued yet
+    this._decode = Promise.resolve();
     this.pump = this.pump.bind(this);
     this.timer = setInterval(this.pump, 20);
   }
@@ -85,6 +89,25 @@ class Player {
     buffer.copyToChannel(f32, 0);
     this.queue.push(buffer);
     if (this.queue.length <= 2) this.pump();
+  }
+
+  // Hosted voices arrive as one complete MP3 per clause. decodeAudioData is
+  // async, so the chunks go through a chain: decoding two clauses in parallel
+  // can finish out of order and play the reply backwards.
+  enqueueMp3(arrayBuffer) {
+    this.pending += 1;
+    this._decode = this._decode
+      .then(() => this.ctx.decodeAudioData(arrayBuffer))
+      .then((buffer) => {
+        this.pending -= 1;
+        this.queue.push(buffer);
+        this.pump();
+      })
+      .catch(() => { this.pending -= 1; });
+  }
+
+  busy() {
+    return this.playing || this.queue.length > 0 || this.pending > 0;
   }
 
   pump() {
@@ -111,6 +134,8 @@ class Player {
 
   stop() {
     this.queue.length = 0;
+    this.pending = 0;
+    this._decode = Promise.resolve();
     for (const src of this.active) { try { src.stop(); } catch { /* already done */ } }
     this.active.clear();
     this.playing = false;
@@ -215,7 +240,7 @@ function connect() {
   ws.onerror = () => { /* onclose handles it */ };
   ws.onmessage = (event) => {
     if (typeof event.data === 'string') onEvent(JSON.parse(event.data));
-    else onAudio(new Int16Array(event.data));
+    else onAudio(event.data);
   };
 }
 
@@ -228,6 +253,7 @@ function onEvent(msg) {
   switch (msg.type) {
     case 'ready':
       state.audioRate = msg.config.output_sample_rate || 24000;
+      state.audioFormat = msg.config.audio_format || 'pcm';
       els.start.disabled = false;
       setStatus('Ready to talk', 'Press Start, then just speak.');
       break;
@@ -280,10 +306,20 @@ function onEvent(msg) {
       state.streaming = true;
       state.phase = 'speaking';
       state.audioRate = msg.sample_rate || state.audioRate;
+      if (msg.format) state.audioFormat = msg.format;
+      state.mp3Parts = state.audioFormat === 'mp3' ? [] : null;
       setStatus('Speaking', '');
       break;
 
     case 'audio_end':
+      if (state.mp3Parts) {
+        const parts = state.mp3Parts;
+        state.mp3Parts = null;
+        if (parts.length && player) {
+          const blob = new Blob(parts, { type: 'audio/mpeg' });
+          blob.arrayBuffer().then((buf) => player.enqueueMp3(buf)).catch(() => {});
+        }
+      }
       break;
 
     case 'idle':
@@ -291,7 +327,7 @@ function onEvent(msg) {
       state.botBubble = null;
       // Done *sending* is not done *speaking*: the player still holds audio.
       // Stay in "speaking" and let the meter loop flip us over when it drains.
-      if (player && (player.playing || player.queue.length)) {
+      if (player && player.busy()) {
         state.draining = true;
         setStatus('Speaking', '');
       } else {
@@ -304,6 +340,7 @@ function onEvent(msg) {
       if (player) player.stop();
       state.streaming = false;
       state.draining = false;
+      state.mp3Parts = null;
       state.phase = 'listening';
       if (state.botBubble) { state.botBubble.classList.add('interrupted'); state.botBubble = null; }
       break;
@@ -331,10 +368,14 @@ function onEvent(msg) {
   }
 }
 
-function onAudio(int16) {
+function onAudio(buf) {
   if (!player) return;
   state.streaming = true;
-  player.enqueue(int16, state.audioRate);
+  if (state.audioFormat === 'mp3') {
+    if (state.mp3Parts) state.mp3Parts.push(buf);
+    return;
+  }
+  player.enqueue(new Int16Array(buf), state.audioRate);
 }
 
 /* -------------------------------------------------------------- transcript */
@@ -373,7 +414,7 @@ function setStatus(main, sub) {
 
 function renderBadges(health) {
   if (!health || !health.status) return;
-  const order = [['vad', 'VAD'], ['stt', 'Whisper'], ['tts', 'Kokoro'], ['llm', 'Ollama']];
+  const order = [['vad', 'VAD'], ['stt', 'Speech'], ['tts', 'Voice'], ['llm', 'Chat']];
   els.badges.innerHTML = order
     .map(([key, label]) => {
       const st = health.status[key] || 'pending';
@@ -388,15 +429,15 @@ async function pollHealth() {
   try {
     const health = await (await fetch('/api/health')).json();
     renderBadges(health);
-    if (!health.ready) setStatus('Loading models…', 'First run downloads weights; this can take a minute.');
+    if (!health.ready) setStatus('Waking up…', 'Loading the engines; the first visit after a pause takes a moment.');
     else if (state.phase === 'idle' && !state.started) {
       els.start.disabled = false;
       const llmDown = health.status && health.status.llm === 'error';
       // Don't let the health poll clobber the microphone warning.
       if (state.micBlocked) setStatus('Microphone blocked', MIC_HINT, 'bad');
       else if (llmDown) {
-        // The server's message already says how to start Ollama.
-        setStatus('LLM unavailable', (health.errors && health.errors.llm) || 'Ollama is not running.');
+        // The server's message explains the fix (API key, or `ollama serve`).
+        setStatus('Chat unavailable', (health.errors && health.errors.llm) || 'The language model is not reachable.');
       } else setStatus('Ready to talk', 'Press Start, then just speak.');
     }
   } catch { /* server restarting */ }
@@ -496,7 +537,7 @@ async function startTalking() {
 function canSendAudio() {
   if (!state.started || state.muted) return false;
   if (state.mode === 'ptt' && !state.pttHeld) return false;
-  if (state.echoGuard && player && (player.playing || state.phase === 'speaking')) return false;
+  if (state.echoGuard && player && (player.busy() || state.phase === 'speaking')) return false;
   return true;
 }
 
@@ -543,7 +584,7 @@ function drawOrb() {
   // schedules up to 0.4 s of audio ahead, so Halo is usually still audible.
   // Promote the phase only once playback has genuinely drained, otherwise the
   // ring freezes while she is mid-sentence.
-  if (state.draining && (!player || (!player.playing && !player.queue.length))) {
+  if (state.draining && (!player || !player.busy())) {
     state.draining = false;
     state.phase = 'idle';
     setStatus('Ready to talk', '');
@@ -605,17 +646,28 @@ function drawOrb() {
 async function loadConfig() {
   const cfg = await (await fetch('/api/config')).json();
   state.cfg = cfg;
-  els.setVoice.innerHTML = (cfg.voices || [])
-    .map((v) => `<option value="${v.id}">${v.label}</option>`)
-    .join('');
-  els.setVoice.value = cfg.tts_voice;
+  const voices = cfg.voices || [];
+  els.setVoice.innerHTML = voices.length
+    ? voices.map((v) => `<option value="${v.id}">${v.label}</option>`).join('')
+    : '<option value="default">Automatic</option>';
+  if (voices.length) els.setVoice.value = cfg.tts_voice;
   els.setPrompt.value = cfg.system_prompt;
   els.setSpeed.value = cfg.tts_speed;
   els.setSpeedVal.textContent = Number(cfg.tts_speed).toFixed(2);
   els.setModel.innerHTML = `<option value="${cfg.llm_model}">${cfg.llm_model}</option>`;
   els.setModel.value = cfg.llm_model;
-  els.stackInfo.textContent =
-    `Whisper ${cfg.whisper_model} · Kokoro ${cfg.tts_backend}/${cfg.tts_voice} · Ollama ${cfg.llm_model} @ ${cfg.ollama_url}`;
+  const stt = cfg.stt_backend === 'groq'
+    ? `Groq ${cfg.groq_stt_model}`
+    : `faster-whisper ${cfg.whisper_model}`;
+  const tts = cfg.tts_engine === 'kokoro'
+    ? `Kokoro ${cfg.tts_backend}/${cfg.tts_voice}`
+    : cfg.tts_engine === 'edge'
+      ? `Edge ${cfg.edge_voice}`
+      : `gTTS ${cfg.gtts_lang}/${cfg.gtts_tld}`;
+  const llm = cfg.llm_backend === 'groq'
+    ? `Groq ${cfg.llm_model}`
+    : `Ollama ${cfg.llm_model} @ ${cfg.ollama_url}`;
+  els.stackInfo.textContent = `${stt} · ${tts} · ${llm}`;
 
   try {
     const r = await (await fetch('/api/models')).json();

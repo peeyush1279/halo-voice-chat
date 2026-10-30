@@ -76,15 +76,28 @@ def ensure_silero() -> Path:
     raise RuntimeError(f"could not obtain silero_vad.onnx: {last_error}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Download model files.")
+    parser.add_argument(
+        "--kokoro",
+        action="store_true",
+        help="also fetch Kokoro-82M (~330 MB); only needed for local TTS",
+    )
+    args = parser.parse_args(argv)
+
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Model directory: {MODELS_DIR}\n")
     print("Silero VAD (voice activity detection):")
     ensure_silero()
-    print("\nKokoro-82M (text to speech):")
-    for name, url in KOKORO_FILES.items():
-        _download(url, MODELS_DIR / name)
-    print("\nDone.  Whisper will download itself on the first run.")
+    if args.kokoro:
+        print("\nKokoro-82M (text to speech):")
+        for name, url in KOKORO_FILES.items():
+            _download(url, MODELS_DIR / name)
+    else:
+        print("\nSkipping Kokoro: hosted mode speaks through gTTS/Edge (`--kokoro` to fetch).")
+    print("\nDone.  Whisper is only downloaded in local mode.")
     return 0
 
 

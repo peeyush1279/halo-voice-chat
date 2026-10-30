@@ -4,4 +4,6 @@ __pycache__/
 *.pyc
 reply.wav
 *.wav
+*.mp3
 *.log
+.env

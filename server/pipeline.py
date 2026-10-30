@@ -125,6 +125,10 @@ class Conversation:
             "system_prompt": self.s.system_prompt,
             "input_sample_rate": INPUT_SR,
             "output_sample_rate": OUTPUT_SR,
+            "audio_format": "pcm" if self.s.tts_engine == "kokoro" else "mp3",
+            "stt_backend": self.s.stt_backend,
+            "llm_backend": self.s.llm_backend,
+            "tts_engine": self.s.tts_engine,
         }
 
     # ------------------------------------------------------------------ outbox
@@ -360,7 +364,7 @@ class Conversation:
             if turn != self._turn or self._closed:
                 continue
             try:
-                audio, sample_rate = self.engines.tts.synthesize(
+                payload, sample_rate, audio_format = self.engines.tts.audio_payload(
                     text, voice=self._tts_voice, speed=self._tts_speed
                 )
             except Exception as exc:
@@ -373,18 +377,31 @@ class Conversation:
             if turn != self._turn or self._closed:
                 continue
 
-            pcm = np.clip(audio, -1.0, 1.0)
-            pcm = (pcm * 32767.0).astype(np.int16)
-
             self._put_from_thread(
-                ("json", {"type": "audio_start", "turn": turn, "id": seq, "sample_rate": sample_rate, "text": text})
+                (
+                    "json",
+                    {
+                        "type": "audio_start",
+                        "turn": turn,
+                        "id": seq,
+                        "sample_rate": sample_rate,
+                        "format": audio_format,
+                        "text": text,
+                    },
+                )
             )
             if seq == 0:
                 self._emit_timing(turn)
-            # ~200 ms per frame keeps the playback queue smooth without chatter.
-            step = max(1, int(sample_rate * 0.2))
-            for i in range(0, pcm.size, step):
-                self._put_from_thread(("bytes", pcm[i : i + step].tobytes()))
+
+            if audio_format == "pcm":
+                # ~200 ms per frame keeps the playback queue smooth without chatter.
+                step = max(1, int(sample_rate * 0.2 * 2))  # int16 -> 2 bytes/sample
+                for i in range(0, len(payload), step):
+                    self._put_from_thread(("bytes", payload[i : i + step]))
+            else:
+                # MP3 arrives as one self-contained file per clause; the browser
+                # decodes it with decodeAudioData and queues the result.
+                self._put_from_thread(("bytes", payload))
             self._put_from_thread(("json", {"type": "audio_end", "turn": turn, "id": seq}))
 
             if turn == self._turn:
