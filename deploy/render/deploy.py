@@ -152,8 +152,13 @@ def main() -> int:
     deploy = client.post(f"/services/{service_id}/deploys", json={"clearCache": "do_not_clear"})
     if deploy.status_code >= 300:
         return fail("could not trigger a deploy", deploy)
-    deploy_id = (deploy.json().get("deploy") or {}).get("id")
-    print(f"deploy {deploy_id} started")
+    # A service created with autoDeploy already has a build queued, and Render
+    # answers that second POST with an empty body rather than JSON.
+    try:
+        deploy_id = (deploy.json().get("deploy") or {}).get("id")
+    except ValueError:
+        deploy_id = None
+    print(f"deploy {deploy_id or '(already running)'} started")
 
     url = None
     status = "unknown"

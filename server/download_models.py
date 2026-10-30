@@ -36,6 +36,10 @@ def _download(url: str, dest: Path) -> None:
     if dest.exists() and dest.stat().st_size > 0:
         print(f"  [skip] {dest.name} already present ({dest.stat().st_size / 1e6:.1f} MB)")
         return
+    # A fresh clone has no models/ directory at all (it is gitignored), so every
+    # download has to be able to create its own parent. Without this the hosted
+    # build came up with VAD dead: no such file '.../models/silero_vad.onnx.part'.
+    dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     print(f"  [get ] {dest.name}  <-  {url}")
 
