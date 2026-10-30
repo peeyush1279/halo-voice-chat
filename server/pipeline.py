@@ -510,6 +510,14 @@ class Conversation:
             self.detector.reset()
             self._emit({"type": "reset_done"})
 
+        elif kind == "diag":
+            # The browser reports what the server cannot see: whether the mic
+            # was granted, what the audio engine actually opened, and any
+            # exception the page hit. Without this, "it does not work" is a
+            # coin flip between a denied permission and a broken worklet.
+            detail = {k: v for k, v in msg.items() if k != "type"}
+            log.info("client diag: %s", json.dumps(detail)[:400])
+
     async def _apply_config(self, msg: dict) -> None:
         changed: list[str] = []
 

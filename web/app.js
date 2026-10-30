@@ -55,6 +55,7 @@ const state = {
   micPeak: 0,        // loudest sample seen since this mic was opened
   micStartedAt: 0,
   micWarned: false,
+  framesSent: 0,     // worklet packets produced (before any echo guard)
   draining: false,   // server said idle, but the last audio is still audible
   phase: 'idle',          // idle | listening | thinking | speaking
   micBlocked: false,
@@ -250,6 +251,25 @@ function connect() {
 function send(obj) {
   if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(obj));
 }
+
+/* Tell the server what only the browser knows. Best effort: never throws, and
+   never spams - one message per stage. */
+const _diagSent = new Set();
+function diag(kind, extra = {}, once = false) {
+  const key = kind + JSON.stringify(extra).slice(0, 80);
+  if (once && _diagSent.has(key)) return;
+  _diagSent.add(key);
+  try {
+    send({ type: 'diag', kind, ua: navigator.userAgent.slice(0, 120), ...extra });
+  } catch { /* diagnostics must never break the app */ }
+}
+
+window.addEventListener('error', (e) => {
+  diag('page_error', { message: String(e.message).slice(0, 200), where: `${e.filename}:${e.lineno}` });
+});
+window.addEventListener('unhandledrejection', (e) => {
+  diag('page_rejection', { message: String((e.reason && e.reason.message) || e.reason).slice(0, 200) });
+});
 
 /* -------------------------------------------------------------- server msgs */
 function onEvent(msg) {
@@ -494,6 +514,7 @@ async function checkMicPermission() {
 async function startTalking() {
   try {
     setStatus('Requesting microphone…', '');
+    diag('mic_request', { secure: window.isSecureContext, hasApi: !!navigator.mediaDevices });
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -505,22 +526,34 @@ async function startTalking() {
         autoGainControl: true,
       },
     });
+    const track = stream.getAudioTracks()[0];
+    const set = (track && track.getSettings) ? track.getSettings() : {};
+    diag('mic_granted', {
+      label: (track && track.label || '').slice(0, 60),
+      rate: set.sampleRate, channels: set.channelCount, state: track && track.readyState,
+    });
 
     if (!player) player = new Player(24000);
     if (player.ctx.state === 'suspended') await player.ctx.resume();
 
     mic = new Mic(stream);
     mic.send = (int16) => {
+      state.framesSent += 1;
       if (!canSendAudio()) return;
       if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(int16.buffer);
     };
     await mic.init();
+    diag('mic_ready', {
+      ctxRate: mic.ctx.sampleRate, ctxState: mic.ctx.state,
+      worklet: !!mic.node, outChannels: mic.node && mic.node.channelCount,
+    });
 
     state.started = true;
     state.micBlocked = false;
     state.micPeak = 0;
     state.micStartedAt = 0;
     state.micWarned = false;
+    state.framesSent = 0;
     els.start.disabled = true;
     els.start.textContent = 'Running';
     els.mic.disabled = false;
@@ -531,6 +564,7 @@ async function startTalking() {
     setStatus('Ready to talk', 'Speak whenever you like.');
   } catch (err) {
     const name = err && err.name ? err.name : 'Error';
+    diag('mic_error', { name, message: String((err && err.message) || err).slice(0, 200) }, true);
     setMicBlocked(name === 'NotAllowedError');
     setStatus('Microphone unavailable', MIC_ERRORS[name] || String(err.message || err), 'bad');
     // Leave Start clickable so a retry works once the permission is fixed.
@@ -595,6 +629,9 @@ function drawOrb() {
     if (!state.micStartedAt) state.micStartedAt = performance.now();
     if (micLvl > state.micPeak) state.micPeak = micLvl;
     const silentFor = (performance.now() - state.micStartedAt) / 1000;
+    if (silentFor > 3 && state.framesSent === 0) {
+      diag('mic_no_frames', { seconds: Math.round(silentFor), peak: +state.micPeak.toFixed(3) }, true);
+    }
     const warn = silentFor > 8 && state.micPeak < 0.02;
     if (warn !== state.micWarned) {
       state.micWarned = warn;
