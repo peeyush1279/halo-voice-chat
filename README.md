@@ -24,15 +24,40 @@ streams raw 16 kHz PCM over a WebSocket either way.
 
 ---
 
+## Live
+
+**<https://halo-voice-chat.onrender.com>** - free Render instance, Groq Whisper
+for speech, Groq chat for replies, gTTS for the voice. It sleeps after ~15 min
+idle, so the first visit of a session takes ~30 s to wake up.
+
 ## Deploy it free on Render
 
 You need one free key, no credit card: **<https://console.groq.com/keys>**. The
 same key covers speech recognition and chat.
 
-1. Push this repo to your GitHub account (it already is, if you cloned it).
-2. On Render: **New → Blueprint**, pick the repo. `render.yaml` is in the root,
-   so the service, build command and environment are filled in for you.
-3. Paste `GROQ_API_KEY` when Render asks. Deploy.
+**From a terminal** - no GitHub app, no dashboard clicks:
+
+```powershell
+$env:RENDER_API_KEY = "rnd_..."     # dashboard.render.com/settings#api-keys
+python deploy/render/deploy.py --region singapore
+```
+
+That resolves the workspace, creates the web service straight from the public
+repo URL, writes `GROQ_API_KEY` and `PYTHON_VERSION=3.12.7`, triggers a build and
+polls until the deploy is live. It is idempotent: run it again to redeploy.
+
+> Render only gets push webhooks for repositories connected through its GitHub
+> app. A service created from a public repo URL therefore never redeploys on
+> `git push` - `autoDeploy` cannot fire. Re-run the script to ship a commit.
+
+**Blueprint** - if you prefer the dashboard: **New → Blueprint**, pick the repo.
+`render.yaml` is in the root, so the service, build command and environment are
+filled in for you. Paste `GROQ_API_KEY` when asked, then Deploy.
+
+**By hand** - **New → Web Service**, public repo, runtime Python 3, build
+`pip install -r requirements.txt`, start
+`uvicorn server.main:app --host 0.0.0.0 --port $PORT`, plan Free, env
+`GROQ_API_KEY=<key>` and `PYTHON_VERSION=3.12.7`.
 
 You get `https://<service-name>.onrender.com` with HTTPS, which is also what the
 microphone requires — a plain-HTTP IP address will not get mic access in Chrome.
@@ -197,7 +222,8 @@ server/
   wstest.py                end-to-end test over the websocket
 
 bench_whisper.py           measures Whisper model/thread latency on your CPU
-render.yaml                one-click free deploy
+render.yaml                blueprint for the dashboard deploy
+deploy/render/deploy.py    same deploy, headless, through the Render API
 ```
 
 ### Why it feels responsive
