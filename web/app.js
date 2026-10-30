@@ -206,7 +206,15 @@ class Mic {
     this.node.connect(sink);
     sink.connect(this.ctx.destination);
 
-    this.node.port.onmessage = (event) => this.send(event.data);
+    this.node.port.onmessage = (event) => {
+      const data = event.data;
+      if (data && data.error) {
+        // The processor caught an exception; make it visible instead of silent.
+        diag('worklet_error', { message: String(data.error).slice(0, 200) }, true);
+        return;
+      }
+      this.send(data);
+    };
     if (this.ctx.state === 'suspended') await this.ctx.resume();
   }
 

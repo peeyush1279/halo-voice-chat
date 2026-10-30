@@ -25,6 +25,15 @@ class MicProcessor extends AudioWorkletProcessor {
     this.out = new Int16Array(CHUNK);
     this.outLen = 0;
 
+    // Scratch for the stereo -> mono fold, allocated up front. A 2-channel
+    // device stream reaches downmix() on the pass-through path too, and an
+    // undefined buffer here threw on the first render quantum - which kills a
+    // worklet for the whole session, so the mic went silent with no error
+    // anywhere except the browser console.
+    this.mono = new Float32Array(0);
+    this.work = new Float32Array(0);
+    this.filt = new Float32Array(0);
+
     if (!this.passthrough) {
       // Source samples waiting to be read, plus a fractional cursor into them.
       this.src = new Float32Array(4096);
@@ -33,13 +42,23 @@ class MicProcessor extends AudioWorkletProcessor {
       // Low-pass state, carried across render quanta.
       this.taps = designLowpass(TAPS, 7200 / sampleRate);
       this.hist = new Float32Array(TAPS - 1);
-      this.work = new Float32Array(0);
-      this.filt = new Float32Array(0);
-      this.mono = new Float32Array(0);
     }
   }
 
   process(inputs) {
+    try {
+      return this.render(inputs);
+    } catch (err) {
+      // Never let one bad quantum silence the microphone forever.
+      if (!this.failed) {
+        this.failed = true;
+        this.port.postMessage({ error: String((err && err.message) || err) });
+      }
+      return true;
+    }
+  }
+
+  render(inputs) {
     const input = inputs[0];
     if (!input || !input[0]) return true;
 
@@ -72,12 +91,19 @@ class MicProcessor extends AudioWorkletProcessor {
   // ---- fallback path helpers ---------------------------------------------
 
   downmix(input) {
-    const n = input[0].length;
-    if (this.mono.length !== n) this.mono = new Float32Array(n);
+    const first = input[0];
+    const n = first ? first.length : 0;
+    if (!this.mono || this.mono.length !== n) this.mono = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       let sum = 0;
-      for (let c = 0; c < input.length; c++) sum += input[c][i] || 0;
-      this.mono[i] = sum / input.length;
+      let used = 0;
+      for (let c = 0; c < input.length; c++) {
+        const ch = input[c];
+        if (!ch) continue;          // a channel can be absent, not just silent
+        sum += ch[i] || 0;
+        used++;
+      }
+      this.mono[i] = used ? sum / used : 0;
     }
     return this.mono;
   }
