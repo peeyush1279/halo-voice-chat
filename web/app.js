@@ -264,12 +264,20 @@ function send(obj) {
    never spams - one message per stage. */
 const _diagSent = new Set();
 function diag(kind, extra = {}, once = false) {
-  const key = kind + JSON.stringify(extra).slice(0, 80);
-  if (once && _diagSent.has(key)) return;
-  _diagSent.add(key);
+  // Key on the kind alone. Keying on the payload let a watchdog that reports
+  // an ever-growing counter slip past `once` and post on every frame.
+  if (once) {
+    if (_diagSent.has(kind)) return;
+    _diagSent.add(kind);
+  }
   try {
     send({ type: 'diag', kind, ua: navigator.userAgent.slice(0, 120), ...extra });
   } catch { /* diagnostics must never break the app */ }
+}
+
+/* A new attempt deserves a fresh report, even for stages that only speak once. */
+function resetDiag(kinds) {
+  for (const k of kinds) _diagSent.delete(k);
 }
 
 window.addEventListener('error', (e) => {
@@ -521,6 +529,7 @@ async function checkMicPermission() {
 
 async function startTalking() {
   try {
+    resetDiag(['mic_error', 'mic_no_frames', 'worklet_error']);
     setStatus('Requesting microphone…', '');
     diag('mic_request', { secure: window.isSecureContext, hasApi: !!navigator.mediaDevices });
     const stream = await navigator.mediaDevices.getUserMedia({
