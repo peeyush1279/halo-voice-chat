@@ -231,6 +231,16 @@ class Settings:
     tts_first_chars: int = _int("V2V_TTS_FIRST_CHARS", 40)
     tts_trim_silence: bool = _bool("V2V_TTS_TRIM_SILENCE", True)
 
+    # --- phone bridge (Plivo / Twilio media streams) -------------------------
+    # Public origin used to build the wss:// URL handed to the carrier. Empty
+    # means "derive it from the request", which is right behind any proxy that
+    # sets X-Forwarded-Proto (Render, Fly, Cloudflare).
+    public_url: str = _env("V2V_PUBLIC_URL", "")
+    # Shared secret for the answer webhook and the media websocket. Empty keeps
+    # the demo working out of the box, but then the URL itself is the secret.
+    phone_token: str = _env("V2V_PHONE_TOKEN", "")
+    phone_max_s: float = _float("V2V_PHONE_MAX_S", 600.0)
+
     @property
     def active_llm_model(self) -> str:
         """The model name the current backend actually answers to.
@@ -244,6 +254,8 @@ class Settings:
         data = asdict(self)
         # Never ship the key to the browser, even though it is only a free one.
         data.pop("groq_api_key", None)
+        # The phone token guards a public webhook; it stays server side.
+        data.pop("phone_token", None)
         # The settings dialog shows and switches models, so it has to see the
         # name the active backend answers to, not the Ollama tag.
         data["llm_model"] = self.active_llm_model

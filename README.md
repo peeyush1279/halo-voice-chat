@@ -82,6 +82,72 @@ would add your own key/quota — nothing in the code assumes the free tier.
 
 ---
 
+## Call it on a phone
+
+The same conversation answers a real phone number. Audio goes out over the
+carrier's media websocket as 8 kHz mu-law, which is the native telephone
+format; `server/phone.py` converts it to the 16 kHz PCM the pipeline already
+speaks and paces the reply back at 20 ms per frame.
+
+```text
+caller -> carrier -> wss /ws/phone -> mu-law 8k -> PCM 16k -> VAD/STT/LLM/TTS
+                 <- playAudio     <- mu-law 8k <- PCM 24k <-
+```
+
+### Which provider, and why (checked November 2026)
+
+| Provider | Free offer | Can it run a call bot for free? |
+| --- | --- | --- |
+| **Plivo** | **$10 credit, no credit card** | **Yes.** Bidirectional streaming, $0.50/mo number, $0.0055/min inbound |
+| Twilio | 30-day trial, no card | No. Trial accounts have `<Stream>` (Media Streams) **blocked**; streaming needs a paid upgrade |
+| Telnyx | $5 trial credit, card required | Barely. Inbound is limited to your one verified number and the number is reclaimed after 30 days |
+| Vonage | ~$2 credit | Technically, but the credit covers about a month of number rental |
+
+So: **Plivo**. Ten dollars at $0.50/month for the number plus $0.0055/minute is
+roughly 20 months of number rental, or ~1,800 minutes of talking. In practice
+the demo is free until you make a few hundred calls.
+
+### Set it up (about five minutes)
+
+1. Sign up at **<https://cx.plivo.com/signup>** - no card, no KYC for US numbers.
+2. **Voice → Applications → Add New Application**
+   * Name: `Halo`
+   * Answer URL: `https://<your-host>/api/phone/answer?provider=plivo`
+   * Method: `POST`
+3. **Voice → Phone Numbers → Buy Numbers** - country *United States*, capability
+   *Voice*, any number ($0.50/mo from the credit).
+4. Open the number → **Application** → pick `Halo` → Save.
+5. Dial the number.
+
+`GET /api/phone` prints the exact Answer URL this instance expects. If you set
+`V2V_PHONE_TOKEN`, append `&token=<value>` to it - that is the only thing
+stopping a stranger from running up the credit.
+
+### Keep it awake or the call fails
+
+This is the one real trap on a free Render instance: it sleeps after ~15 idle
+minutes, and a carrier gives a webhook a few seconds to answer. A call to a
+sleeping instance rings out. Point a free uptime monitor (UptimeRobot, cron-job.org)
+at `/api/health` every 5-10 minutes; 24/7 is 744 hours, just inside Render's 750
+free instance-hours per month.
+
+### Test it without a phone
+
+`server/phonetest.py` impersonates a carrier: it opens the same websocket,
+streams a recording as 20 ms mu-law frames in real time, and writes the bot's
+reply to `phone-reply.wav` so you can hear exactly what a caller would.
+
+```powershell
+python -m server.phonetest --wav me.wav                      # Plivo shape
+python -m server.phonetest --wav me.wav --provider twilio    # Twilio shape
+python -m server.phone                                       # codec self-test
+```
+
+Measured on the hosted stack, one turn over the phone path: **STT 501 ms,
+7.6 s of reply audio out, 20 s call end to end**, transcript exact.
+
+---
+
 ## Run it locally against the same free APIs
 
 ```powershell
@@ -289,6 +355,14 @@ PowerShell: `$env:V2V_TTS_ENGINE="edge"; .\run.ps1`.
 | `V2V_TTS_MIN_CHARS` | `10` | smallest clause handed to the voice |
 | `V2V_TTS_MAX_CHARS` | `150` | |
 | `V2V_TTS_FIRST_CHARS` | `40` | **main "first audio" knob**; `0` = off |
+
+### Phone (optional)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `V2V_PHONE_TOKEN` | empty | shared secret in the Answer URL and `wss` query; set it before sharing a number |
+| `V2V_PUBLIC_URL` | derived | origin used to build the carrier's `wss://` URL, e.g. `https://halo-voice-chat.onrender.com` |
+| `V2V_PHONE_MAX_S` | `600` | hard hang-up, keeps a stuck call from eating trial credit |
 
 ### Local-only
 

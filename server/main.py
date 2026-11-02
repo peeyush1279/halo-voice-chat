@@ -9,11 +9,12 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .config import MODELS_DIR, WEB_DIR, get_settings
 from .engines import Engines
+from .phone import answer_xml, public_base, run_call
 from .pipeline import Conversation
 
 log = logging.getLogger("v2v")
@@ -116,6 +117,57 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         await conversation.run()
     finally:
         log.info("client disconnected")
+
+
+# --------------------------------------------------------------------- phone
+@app.get("/api/phone")
+async def api_phone(request: Request) -> JSONResponse:
+    """Everything needed to point a carrier number at this instance.
+
+    The token is deliberately not echoed here: this route is public, and the
+    only thing standing between a stranger and a paid phone call is that
+    secret.  Compose the URL as `answer_url` + `&token=...` when one is set.
+    """
+    base = public_base(request, settings.public_url)
+    return JSONResponse(
+        {
+            "ok": True,
+            "answer_url": f"{base}/api/phone/answer?provider=plivo",
+            "twilio_answer_url": f"{base}/api/phone/answer?provider=twilio",
+            "token_required": bool(settings.phone_token),
+            "max_call_seconds": settings.phone_max_s,
+        }
+    )
+
+
+@app.api_route("/api/phone/answer", methods=["GET", "POST"])
+async def api_phone_answer(request: Request) -> Response:
+    """The document a carrier fetches when the number rings."""
+    provider = (request.query_params.get("provider") or "plivo").lower()
+    if provider not in ("plivo", "twilio"):
+        provider = "plivo"
+    token = request.query_params.get("token") or ""
+    if settings.phone_token and token != settings.phone_token:
+        log.warning("phone webhook rejected: bad token")
+        return Response(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Say>Unauthorized.</Say></Response>",
+            media_type="application/xml",
+            status_code=403,
+        )
+    base = public_base(request, settings.public_url)
+    log.info("call answering  provider=%s", provider)
+    return Response(answer_xml(provider, base, token), media_type="application/xml")
+
+
+@app.websocket("/ws/phone")
+async def phone_endpoint(ws: WebSocket) -> None:
+    token = ws.query_params.get("token") or ""
+    if settings.phone_token and token != settings.phone_token:
+        log.warning("phone websocket rejected: bad token")
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+    await run_call(ws, engines, settings)
 
 
 def main() -> None:
